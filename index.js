@@ -49,6 +49,7 @@ exports.parse = function(src) {
   var gl = Gitlog();
   gl.on('finish', function() {
     gl.emit('commit', gl._current);
+    gl.emit('complete');
   });
   return byline(src).pipe(gl);
 }
