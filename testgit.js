@@ -2,9 +2,15 @@
 var parselog = require('./index').parse;
 var exec = require('child_process').exec;
 var fs = require('fs');
-var readStream = fs.createReadStream('fulloutput.txt');
+// Producted by running git log --stat
+var readStream = fs.createReadStream('gitlog.txt');
 
-//var logout = exec('git log').stdout;
+var GitHub = require('github-api');
+
+// basic auth
+var gh = new GitHub({
+  token: fs.readFileSync('accesstoken.txt')
+});
 
 function splitSlash(str) {
   var rv = [];
@@ -171,12 +177,18 @@ var lastDirCounts = {};
 var authorCounts = {};
 var dedupe = {};
 var total = 0;
+const startDate = '2020-01-01';
 
 parseCmd.on('commit', function(commit) {
   // Skip commits before July 2015 (past two years)
-  if(commit.date < new Date('2015-07-01'))
+  if(commit.date < new Date(startDate))
     return;
-  
+
+  // The PR associated with this commit is the last one since a previous one can appear in a revert
+  // commit message.
+  // If there is no commit PR, this is a direct trunk commit (bad!), so leave it as null
+  const commitPR = commit.prs.length ? commit.prs[commit.prs.length-1] : null;
+
   if(!(commit.author.name in authorCounts))
     authorCounts[commit.author.name] = 0;
   for(var k in commit.fileMap)
@@ -198,7 +210,7 @@ parseCmd.on('commit', function(commit) {
       dedupe[deDupeKey] = true;
       commitCounts[k] += 1;
     }
-    
+
     /*
     var dirs = splitSlash(k);
     dirs.pop();
@@ -216,7 +228,7 @@ parseCmd.on('commit', function(commit) {
         lastDirCounts[lastdir] = 0;
       lastDirCounts[lastdir] += ct;
     }
-    
+
     var blocked = false;
     blockedPaths.forEach(function(path) {
       if(k.indexOf(path) != -1)
@@ -229,16 +241,16 @@ parseCmd.on('commit', function(commit) {
       fileCounts[k] += ct;
     }
     */
-    
+
     authorCounts[commit.author.name] += ct;
   }
-  
+
   total++;
 });
 
 function outputFileCounts(fileCounts, commitCounts) {
   console.log('type,subtype,filetype,filename,linechanges,commits');
-  
+
   var names = Object.keys(fileCounts);
   names.sort();
   names.forEach(function(name) {
@@ -254,7 +266,7 @@ function outputFileCounts(fileCounts, commitCounts) {
       else if(extname)
         ftype = extname;
     }
-    
+
     // Find the file in the extension map
     var curPrefixes = prefixes;
     var type = 'other';
@@ -269,14 +281,14 @@ function outputFileCounts(fileCounts, commitCounts) {
         return; // blocked
       else if(!curPrefixes)
         break;
-      
+
       if(curPrefixes._TYPE)
         type = curPrefixes._TYPE;
-      
+
       if(curPrefixes._SUBTYPE)
         subtype = curPrefixes._SUBTYPE;
     }
-    
+
     // Dump CSV with all of the directory counts
     console.log([type, subtype, ftype, name, fileCounts[name],
         commitCounts[name]].join());
@@ -286,7 +298,12 @@ function outputFileCounts(fileCounts, commitCounts) {
 parseCmd.on('close', function() {
   //console.log(dirCounts);
   //console.log(authorCounts);
-  
-  outputFileCounts(fileCounts, commitCounts);
+
+  var scrapwalls = gh.getRepo('CollageCom', 'scrapwalls');
+  scrapwalls.listPullRequests(function(err, pulls) {
+    console.log(pulls);
+    outputFileCounts(fileCounts, commitCounts);
+  });
+
 });
 

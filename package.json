@@ -22,5 +22,8 @@
   "homepage": "https://github.com/yorkie/node-gitlog-parser",
   "dependencies": {
     "byline": "^4.1.1"
+  },
+  "devDependencies": {
+    "github-api": "^3.3.0"
   }
 }

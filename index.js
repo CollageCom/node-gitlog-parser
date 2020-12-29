@@ -12,16 +12,40 @@ function Gitlog() {
 }
 util.inherits(Gitlog, Writable);
 
-var changeRegx = new RegExp(/(\d+) files? changed(, (\d+) insertions?\(\+\))?(, (\d+) deletions?\(\-\))?/i)
-var fileRegx = new RegExp(/([^\s]+)\s+\|\s+((Bin.*)|(\d+))/i);
+var changeRegx = new RegExp(/(\d+) files? changed(, (\d+) insertions?\(\+\))?(, (\d+) deletions?\(\-\))?/i);
+var jiraRegx = new RegExp(/(COL-\d+)/g);
+var prRegx = new RegExp(/\(#(\d+)\)/g);
+var fileRegx = new RegExp(/([^\s]+)\s+\|\s+((Bin.*)|(\d+)\s*([+-]*))/i);
 
 function parseMessage(obj) {
   obj.fileMap = {}; // Map of file name -> number of changed lines
-  obj.message.forEach(function(line) {
-    // Skip comments, merge strings, etc.
-    if(line[0] != ' ' || line[1]  == ' ')
+  obj.branchCommitMessages = [];
+  obj.message.forEach(function(line, lineNumber) {
+    // The first line is the commit message
+    if (lineNumber === 0) {
+      // Save this as the main commit message
+      obj.commitMessage = line.trim();
+
+      // Extract any Jira issues
+      obj.jiras = line.match(jiraRegx);
+
+      // Extract any PR numbers (should be one hopefully)
+      obj.prs = (line.match(prRegx) || []).map((val) => val.substring(2, val.length - 1));
       return;
-    line = line.slice(1);
+    }
+
+    // If this is a later comment line, most likely individual commit messages
+    if (line.substring(0, 4) === '    ') {
+      if (line.substring(0, 6) === '    * ') {
+        obj.branchCommitMessages.push(line.substring(6));
+      }
+      // Otherwise we don't care for now. Can be 'Former-commit-id: <commit>', or other author
+      // information.
+      return;
+    }
+
+    // Otherwise this is a file change message
+    line = line.substring(1);
     var match;
     if(match = line.match(changeRegx))
     {
@@ -32,8 +56,16 @@ function parseMessage(obj) {
       if(match[3])  // Binary file
         return;
       var fname = match[1];
-      var count = match[4];
-      obj.fileMap[fname] = count;
+      var total = parseInt(match[4], 10);
+      var insertDeleteString = match[5];
+      const firstDelete = insertDeleteString.indexOf('-');
+      const numInserts = Math.round(firstDelete * total / insertDeleteString.length);
+      const numDeletes = total - numInserts;
+      obj.fileMap[fname] = {
+        total,
+        numDeletes,
+        numInserts,
+      }
     }
     else
       throw Error('Failed parsing line ' + line);
