@@ -300,7 +300,11 @@ parseCmd.on('close', function() {
   //console.log(authorCounts);
 
   var scrapwalls = gh.getRepo('CollageCom', 'scrapwalls');
-  scrapwalls.listPullRequests(function(err, pulls) {
+  scrapwalls.listPullRequests({state: 'all', per_page: 100, page: 2}, function(err, pulls) {
+
+    // body should have full description and Jira ticket link
+    // head.ref should have branch name, which may contain jira issue
+    // title may contain jira issue
     console.log(pulls);
     outputFileCounts(fileCounts, commitCounts);
   });
