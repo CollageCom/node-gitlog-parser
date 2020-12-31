@@ -2,6 +2,7 @@
 var Writable = require('stream').Writable;
 var util = require('util');
 var byline = require('byline');
+const { debug } = require('console');
 
 function Gitlog() {
   if (!(this instanceof Gitlog))
@@ -67,8 +68,11 @@ function parseMessage(obj) {
 
       var totalChanges = parseInt(match[4], 10);
       var insertDeleteString = match[5];
+
       const firstDelete = insertDeleteString.indexOf('-');
-      const numInserts = Math.round(firstDelete * totalChanges / insertDeleteString.length);
+
+      const numInserts = firstDelete === -1 ? totalChanges :
+          Math.round(firstDelete * totalChanges / insertDeleteString.length);
       const numDeletes = totalChanges - numInserts;
       obj.fileMap[fname] = {
         totalChanges,

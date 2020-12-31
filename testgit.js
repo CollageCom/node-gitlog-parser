@@ -4,6 +4,7 @@ const { exception } = require('console');
 var fs = require('fs');
 const process = require('process');
 const { spawnSync } = require('child_process');
+const moment = require('moment');
 
 const csv = require('fast-csv');
 
@@ -70,8 +71,13 @@ class CommitCsvManager
 
   _appendRows(rows, filename)
   {
+    const includeHeaders = !fs.existsSync(filename);
     var writeStream = fs.createWriteStream(filename, { flags: 'a' });
-    const csvStream = csv.format({ headers: true });
+    // Need to write a newline if there are no headers
+    if (!includeHeaders) {
+      writeStream.write('\n');
+    }
+    const csvStream = csv.format({ headers: includeHeaders });
     csvStream.pipe(writeStream);
     rows.forEach((row) => {
       csvStream.write(row);
@@ -84,7 +90,7 @@ class CommitCsvManager
     return {
       commit_message: commit.commitMessage,
       repository: this.repository,
-      date: commit.date,
+      date: commit.date.toISOString(),
       sha: commit.hash,
       pr_number: commit.prNumber,
       revert_pr_number: commit.revertPrNumber,
@@ -97,12 +103,12 @@ class CommitCsvManager
   {
     return Object.entries(commit.fileMap).map(([name, data]) => ({
       parent_sha: commit.hash,
-      parent_date: commit.date,
+      parent_date: commit.date.toISOString(),
       file_name: name,
       renamed_from: data.renamedFrom,
       total_changes: data.totalChanges,
       num_deletes: data.numDeletes,
-      numInserts: data.numInserts,
+      num_inserts: data.numInserts,
     }));
   }
 
@@ -110,7 +116,7 @@ class CommitCsvManager
   {
     return commit.branchCommitMessages.map((message, index) => ({
       parent_sha: commit.hash,
-      parent_date: commit.date,
+      parent_date: commit.date.toISOString(),
       message,
       index,
     }));
@@ -159,7 +165,7 @@ class CommitReader
     }
 
     const result = spawnSync('git', args, {maxBuffer: 256 * 1024 * 1024});
-    if (result.error) {
+    if (result.status == 128 || result.error) {
       throw result.stderr.toString();
     }
 
@@ -194,7 +200,7 @@ const manager = new CommitCsvManager({repository: 'CollageCom/scrapwalls'});
 const afterCommit = manager.getLatestCommitHash();
 
 const parser = new CommitReader({
-  // afterCommit,
+  //afterCommit,
   path: '../swdev'
 });
 parser.read().then((commits) => {
