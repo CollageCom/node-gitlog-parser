@@ -13,9 +13,9 @@ function Gitlog() {
 util.inherits(Gitlog, Writable);
 
 var changeRegx = new RegExp(/(\d+) files? changed(, (\d+) insertions?\(\+\))?(, (\d+) deletions?\(\-\))?/i);
-var jiraRegx = new RegExp(/(COL-\d+)/g);
 var prRegx = new RegExp(/\(#(\d+)\)/g);
-var fileRegx = new RegExp(/([^\s]+)\s+\|\s+((Bin.*)|(\d+)\s*([+-]*))/i);
+var fileRegx = new RegExp(/([^|]+)\|\s+((Bin.*)|(\d+)\s*([+-]*))/i);
+var renameRegx = new RegExp(/\{(.*) => (.*)\}/);
 
 function parseMessage(obj) {
   obj.fileMap = {}; // Map of file name -> number of changed lines
@@ -26,11 +26,10 @@ function parseMessage(obj) {
       // Save this as the main commit message
       obj.commitMessage = line.trim();
 
-      // Extract any Jira issues
-      obj.jiras = line.match(jiraRegx);
-
-      // Extract any PR numbers (should be one hopefully)
-      obj.prs = (line.match(prRegx) || []).map((val) => val.substring(2, val.length - 1));
+      // Extract any PR numbers. If more than one, treat the first one as  revert
+      const prs = (line.match(prRegx) || []).map((val) => val.substring(2, val.length - 1));
+      obj.prNumber = prs.length > 0 ? prs[prs.length-1] : null;
+      obj.revertPrNumber = prs.length > 1 ? prs[0] : null;
       return;
     }
 
@@ -55,16 +54,27 @@ function parseMessage(obj) {
     {
       if(match[3])  // Binary file
         return;
-      var fname = match[1];
-      var total = parseInt(match[4], 10);
+      var fname = match[1].trim();
+      // If there is a rename, get that
+      const renameMatch = fname.match(renameRegx);
+      let renamedFrom = null;
+      if (renameMatch) {
+        const oldName = renameMatch[1];
+        const newName = renameMatch[2];
+        renamedFrom = fname.replace(renameRegx, oldName).replace('//', '/');
+        fname = fname.replace(renameRegx, newName).replace('//', '/');
+      }
+
+      var totalChanges = parseInt(match[4], 10);
       var insertDeleteString = match[5];
       const firstDelete = insertDeleteString.indexOf('-');
-      const numInserts = Math.round(firstDelete * total / insertDeleteString.length);
-      const numDeletes = total - numInserts;
+      const numInserts = Math.round(firstDelete * totalChanges / insertDeleteString.length);
+      const numDeletes = totalChanges - numInserts;
       obj.fileMap[fname] = {
-        total,
+        totalChanges,
         numDeletes,
         numInserts,
+        renamedFrom,
       }
     }
     else
@@ -127,11 +137,14 @@ exports.parse = function(src) {
   if (!src.pipe) throw new Error('first argument must be Readable');
   var gl = Gitlog();
   gl.on('finish', function() {
+    parseMessage(gl._current);
     gl.emit('commit', gl._current);
+    gl.emit('close');
   });
   var bysrc = byline(src);
   // Forward the close event since byline doesn't handle it
   src.on('close', function() {
+    parseMessage(gl._current);
     gl.emit('commit', gl._current);
     gl.emit('close');
   });

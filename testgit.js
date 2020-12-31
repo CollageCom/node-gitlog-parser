@@ -1,16 +1,207 @@
 
 var parselog = require('./index').parse;
-var exec = require('child_process').exec;
+const { exception } = require('console');
 var fs = require('fs');
+const process = require('process');
+const { spawnSync } = require('child_process');
+
+const csv = require('fast-csv');
+
+var Readable = require('stream').Readable;
+
 // Producted by running git log --stat
 var readStream = fs.createReadStream('gitlog.txt');
 
-var GitHub = require('github-api');
 
-// basic auth
-var gh = new GitHub({
-  token: fs.readFileSync('accesstoken.txt')
+class CommitCsvManager
+{
+  constructor(options = {})
+  {
+    this.filenames = {
+      commits: 'commits.csv',
+      branchMessages: 'commit_branch_messages.csv',
+      fileChanges: 'commit_file_changes.csv',
+    };
+    this.repository = options.repository;
+  }
+
+  /**
+   * Loads all of the commits from file
+   */
+  loadData()
+  {
+    return new Promise((resolve, reject) => {
+      this.lines = [];
+      fs.createReadStream(this.filename)
+        .pipe(csv.parse({ headers: true }))
+        .on('data', data => this.lines.push(data))
+        .on('error', error => reject(error))
+        .on('end', () => resolve());
+    });
+  }
+
+  getLatestCommitHash()
+  {
+    return '31c4d595becc8e4e5c54607f69f9895d6bbf7b43';
+  }
+
+  appendCommits(commits)
+  {
+    // First, sort the commits by time ascending so we are adding newest data to the end of the
+    // file.
+    commits.sort((a, b) => {
+      return a.date > b.date ? 1 : -1;
+    });
+
+    // Commits map to three tables:
+    //  1. Commits themselves
+    //  2. Branch commit messages
+    //  3. File changes
+
+    const commitRows = commits.map((commit) => this._flattenCommitRow(commit));
+    this._appendRows(commitRows, this.filenames.commits);
+
+    const branchMessageRows = commits.map((commit) => this._extractBranchMessages(commit)).flat();
+    this._appendRows(branchMessageRows, this.filenames.branchMessages);
+
+    const fileChangesRows = commits.map((commit) => this._extractfileChanges(commit)).flat();
+    this._appendRows(fileChangesRows, this.filenames.fileChanges);
+  }
+
+  _appendRows(rows, filename)
+  {
+    var writeStream = fs.createWriteStream(filename, { flags: 'a' });
+    const csvStream = csv.format({ headers: true });
+    csvStream.pipe(writeStream);
+    rows.forEach((row) => {
+      csvStream.write(row);
+    });
+    csvStream.end();
+  }
+
+  _flattenCommitRow(commit)
+  {
+    return {
+      commit_message: commit.commitMessage,
+      repository: this.repository,
+      date: commit.date,
+      sha: commit.hash,
+      pr_number: commit.prNumber,
+      revert_pr_number: commit.revertPrNumber,
+      author_name: commit.author.name,
+      author_email: commit.author.email,
+    };
+  }
+
+  _extractfileChanges(commit)
+  {
+    return Object.entries(commit.fileMap).map(([name, data]) => ({
+      parent_sha: commit.hash,
+      parent_date: commit.date,
+      file_name: name,
+      renamed_from: data.renamedFrom,
+      total_changes: data.totalChanges,
+      num_deletes: data.numDeletes,
+      numInserts: data.numInserts,
+    }));
+  }
+
+  _extractBranchMessages(commit)
+  {
+    return commit.branchCommitMessages.map((message, index) => ({
+      parent_sha: commit.hash,
+      parent_date: commit.date,
+      message,
+      index,
+    }));
+  }
+}
+
+class CommitReader
+{
+  /**
+   * Options:
+   *  - path: change to this working directory for running the command
+   *  - afterCommit: only get data fter this commit
+   *  - afterDate: only get data after this date (can be combined with commit)
+   *
+   * Return value: a stream that produces the raw stdout of git log
+   */
+  constructor(options)
+  {
+    this.options = options;
+    this.commits = [];
+  }
+
+  _getRawGitLogStream()
+  {
+    const options = this.options;
+    const args = [];
+    if (options.path) {
+      args.push('--work-tree');
+      args.push(options.path);
+
+      args.push('--git-dir');
+      args.push(`${options.path}/.git`);
+    }
+    args.push('log');
+    args.push('--stat=5000');
+
+    // Only read commits that occurred after this date
+    if (options.afterDate) {
+      args.push(`--after=${options.afterDate}`);
+    }
+
+    // Only read commits that occurred after this one
+    if (options.afterCommit) {
+      const endCommit = options.beforeCommit || 'HEAD';
+      args.push(`${options.afterCommit}..${endCommit}`);
+    }
+
+    const result = spawnSync('git', args, {maxBuffer: 256 * 1024 * 1024});
+    if (result.error) {
+      throw result.stderr.toString();
+    }
+
+    var outStream = new Readable();
+    const dataString = result.stdout.toString();
+    outStream.push(dataString);
+    outStream.push(null);
+
+    return outStream;
+  }
+
+  read()
+  {
+    const rawGitStream = this._getRawGitLogStream();
+    const parsedGitStream = parselog(rawGitStream);
+
+    parsedGitStream.on('commit', (commit) => {
+      this.commits.push(commit);
+    });
+
+    return new Promise((resolve, reject) => {
+      parsedGitStream.on('error', reject);
+      parsedGitStream.on('close', () => {
+        resolve(this.commits);
+      });
+    });
+  }
+}
+
+const manager = new CommitCsvManager({repository: 'CollageCom/scrapwalls'});
+// Get the latest commit that was already saved
+const afterCommit = manager.getLatestCommitHash();
+
+const parser = new CommitReader({
+  // afterCommit,
+  path: '../swdev'
 });
+parser.read().then((commits) => {
+  manager.appendCommits(commits);
+});
+
+/*
 
 function splitSlash(str) {
   var rv = [];
@@ -169,7 +360,7 @@ var prefixes = {
   sql: null,
 };
 
-var parseCmd = parselog(readStream);
+
 var dirCounts = {};
 var fileCounts = {};
 var commitCounts = {};
@@ -178,75 +369,6 @@ var authorCounts = {};
 var dedupe = {};
 var total = 0;
 const startDate = '2020-01-01';
-
-parseCmd.on('commit', function(commit) {
-  // Skip commits before July 2015 (past two years)
-  if(commit.date < new Date(startDate))
-    return;
-
-  // The PR associated with this commit is the last one since a previous one can appear in a revert
-  // commit message.
-  // If there is no commit PR, this is a direct trunk commit (bad!), so leave it as null
-  const commitPR = commit.prs.length ? commit.prs[commit.prs.length-1] : null;
-
-  if(!(commit.author.name in authorCounts))
-    authorCounts[commit.author.name] = 0;
-  for(var k in commit.fileMap)
-  {
-    // Ignore these files, which aren't actually in the repo.
-    if(k.slice(0, 2) == '..')
-      continue;
-    var ct = parseInt(commit.fileMap[k]);
-    if(!(k in fileCounts))
-    {
-      fileCounts[k] = 0;
-      commitCounts[k] = 0;
-    }
-    fileCounts[k] += ct;
-    var deDupeKey = k + commit.author.name +
-        commit.date.toDateString();
-    if(!(deDupeKey in dedupe))
-    {
-      dedupe[deDupeKey] = true;
-      commitCounts[k] += 1;
-    }
-
-    /*
-    var dirs = splitSlash(k);
-    dirs.pop();
-    var lastdir = null;
-    dirs.forEach(function(tok) {
-      if(!(tok in dirCounts))
-        dirCounts[tok] = 0;
-      dirCounts[tok] += ct;
-      lastdir = tok;
-    });
-    if(lastdir)
-    {
-      lastdir += '/*';
-      if(!(lastdir in lastDirCounts))
-        lastDirCounts[lastdir] = 0;
-      lastDirCounts[lastdir] += ct;
-    }
-
-    var blocked = false;
-    blockedPaths.forEach(function(path) {
-      if(k.indexOf(path) != -1)
-        blocked = true;
-    });
-    if(!blocked)
-    {
-      if(!(k in fileCounts))
-        fileCounts[k] = 0;
-      fileCounts[k] += ct;
-    }
-    */
-
-    authorCounts[commit.author.name] += ct;
-  }
-
-  total++;
-});
 
 function outputFileCounts(fileCounts, commitCounts) {
   console.log('type,subtype,filetype,filename,linechanges,commits');
@@ -294,20 +416,17 @@ function outputFileCounts(fileCounts, commitCounts) {
         commitCounts[name]].join());
   });
 }
-
-parseCmd.on('close', function() {
+/*
+parseCmd.on('close', async function() {
   //console.log(dirCounts);
   //console.log(authorCounts);
 
-  var scrapwalls = gh.getRepo('CollageCom', 'scrapwalls');
-  scrapwalls.listPullRequests({state: 'all', per_page: 100, page: 2}, function(err, pulls) {
-
-    // body should have full description and Jira ticket link
-    // head.ref should have branch name, which may contain jira issue
-    // title may contain jira issue
-    console.log(pulls);
-    outputFileCounts(fileCounts, commitCounts);
-  });
+  // body should have full description and Jira ticket link
+  // head.ref should have branch name, which may contain jira issue
+  // title may contain jira issue
+  console.log('a');
+  console.log(pulls);
+  outputFileCounts(fileCounts, commitCounts);
 
 });
-
+*/
